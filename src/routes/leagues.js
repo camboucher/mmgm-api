@@ -10,7 +10,7 @@ const fetchLeague = async (leagueId) => {
 
 router.get('/:leagueId', async (req, res) => {
   try {
-    const { leagueId } = req.params;  // Get from URL params instead of body
+    const { leagueId } = req.params; 
     const leagueData = await fetchLeague(leagueId);
     
     if (Object.keys(leagueData).length) {
