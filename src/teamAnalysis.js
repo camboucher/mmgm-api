@@ -1,4 +1,4 @@
-// const leagueId = "1098669917550878720";
+const mockId = "1098669917550878720";
 
 const PLAYER_ACQUISITION_TYPES = {
   add: "add",
@@ -6,26 +6,7 @@ const PLAYER_ACQUISITION_TYPES = {
   draft: "draft",
 };
 
-const EMPTY_TEAM_OBJ = {
-  userId: "",
-  rosterId: "",
-  players: {
-    /*
-      "id": "add" | "trade" | "draft"
-      */
-  },
-  points: {
-    adds: 0,
-    trades: 0,
-    draft: 0,
-  },
-  totalTransactions: 0,
-  cumulativeWins: 0,
-  actualWins: 0,
-  messagesSent: 0,
-};
-
-const getTransactionAndMatchupsByWeek = async (week) => {
+const getTransactionAndMatchupsByWeek = async (week, leagueId) => {
   const transactions = await fetch(
     `https://api.sleeper.app/v1/league/${leagueId}/transactions/${week}`
   ).then((res) => res.json());
@@ -33,7 +14,7 @@ const getTransactionAndMatchupsByWeek = async (week) => {
     `https://api.sleeper.app/v1/league/${leagueId}/matchups/${week}`
   ).then((res) => res.json());
 
-  return { transction, matchups };
+  return { transactions, matchups };
 };
 
 export const analyzeLeague = async (leagueId) => {
@@ -65,7 +46,14 @@ export const analyzeLeague = async (leagueId) => {
         const { wins, total_moves } = roster.settings;
         const { roster_id, owner_id } = roster;
         teamsDict[roster_id] = {
-          ...EMPTY_TEAM_OBJ,
+          players: {},
+          points: {
+            adds: 0,
+            trades: 0,
+            draft: 0,
+          },
+          cumulativeWins: 0,
+          messagesSent: 0,
           userId: owner_id,
           rosterId: roster_id,
           actualWins: wins,
@@ -78,41 +66,43 @@ export const analyzeLeague = async (leagueId) => {
   await fetch(`https://api.sleeper.app/v1/draft/${draftId}/picks`)
     .then((res) => res.json())
     .then((draftPicks) => {
-      draftPicks.forEach((pick) => {
+      draftPicks.forEach((pick, i) => {
         // maybe we can go back later and edit this to calculate points by round and look at + / - points by round
-        const { roster_id, player_id } = pick;
+        const { player_id, roster_id } = pick;
         teamsDict[roster_id].players[player_id] =
           PLAYER_ACQUISITION_TYPES.draft;
       });
     });
 
-  // instanstiate array to track transactions and matchups by week. start with first week
-  const weeks = new Array(regularSeasonLength);
-
   const reduceTransactionData = (transactions) => {
     transactions.forEach((transaction) => {
       const { status, type, adds, drops } = transaction;
       if (status === "complete") {
-        const playersAdded = Object.keys(adds);
-        const playersDropped = Object.keys(drops);
+        const playersAdded = Object.keys(adds ?? []);
+        const playersDropped = Object.keys(drops ?? []);
+
         switch (type) {
           case "waiver":
           case "free_agent":
+          case "commissioner":
             playersAdded.forEach((id) => {
               const rosterId = adds[id];
               teamsDict[rosterId].players[id] = PLAYER_ACQUISITION_TYPES.add;
             });
+            break;
           case "trade":
             playersAdded.forEach((id) => {
               const rosterId = adds[id];
               teamsDict[rosterId].players[id] = PLAYER_ACQUISITION_TYPES.trade;
             });
+            break;
           default:
             console.log("transaction type not recognized", type);
             break;
         }
         playersDropped.forEach((id) => {
-          delete teamsDict[rosterId].player_id[id];
+          const rosterId = drops[id];
+          delete teamsDict[rosterId].players[id];
         });
       }
     });
@@ -120,6 +110,7 @@ export const analyzeLeague = async (leagueId) => {
 
   const reduceMatchupData = (matchups) => {
     matchups.sort((a, b) => b.points - a.points);
+
     matchups.forEach((matchup, i) => {
       const { roster_id, starters, players_points } = matchup;
 
@@ -133,14 +124,19 @@ export const analyzeLeague = async (leagueId) => {
         switch (playerAcquisitionType) {
           case PLAYER_ACQUISITION_TYPES.draft:
             teamsDict[roster_id].points.draft += pointsScored;
-          case playerAcquisitionType.add:
+            break;
+          case PLAYER_ACQUISITION_TYPES.add:
             teamsDict[roster_id].points.adds += pointsScored;
-          case playerAcquisitionType.draft:
+            break;
+          case PLAYER_ACQUISITION_TYPES.trade:
             teamsDict[roster_id].points.trades += pointsScored;
+            break;
           default:
             console.log(
               "invalid playerAcquisition type",
-              playerAcquisitionType
+              playerAcquisitionType,
+              id
+              // teamsDict[roster_id].players
             );
             break;
         }
@@ -148,22 +144,24 @@ export const analyzeLeague = async (leagueId) => {
     });
   };
 
-  await weeks.forEach(async (week, i) => {
+  for (let i = firstWeek; i < firstWeek + regularSeasonLength; i++) {
     const { transactions, matchups } = await getTransactionAndMatchupsByWeek(
-      i + firstWeek
+      i,
+      leagueId
     );
     reduceTransactionData(transactions);
     reduceMatchupData(matchups);
-  });
+  }
 
   const teamsDictEnum = Object.values(teamsDict);
-  const bestDrafter = [null, 0];
-  const worstDrafter = [null, Infinity];
-  const bestTrader = [null, 0];
-  const worstTrader = [null, Infinity];
-  const bestWaiverWire = [null, 0];
-  const bestMatchupLuck = [null, -1];
-  const worstMatchupLuck = [null, 1];
+
+  let bestDrafter;
+  let worstDrafter;
+  let bestTrader;
+  let worstTrader;
+  let bestWaiverWire;
+  let bestMatchupLuck;
+  let worstMatchupLuck;
 
   teamsDictEnum.forEach((team) => {
     const { adds, trades, draft } = team.points;
@@ -174,26 +172,26 @@ export const analyzeLeague = async (leagueId) => {
     // high luck factor means team won more games than expected;
     const luckFactor = actualWinPercentage - theoreticalWinPercentage;
 
-    if (!worstMatchupLuck[0] || worstMatchupLuck[1] < luckFactor) {
-      worstMatchupLuck = [team[rosterid], luckFactor];
+    if (!worstMatchupLuck || worstMatchupLuck.luckFactor > luckFactor) {
+      worstMatchupLuck = { ...team, luckFactor };
     }
-    if (!bestMatchupLuck[0] || bestMatchupLuck[1] > luckFactor) {
-      bestMatchupLuck = [team[rosterid], luckFactor];
+    if (!bestMatchupLuck || bestMatchupLuck.luckFactor < luckFactor) {
+      bestMatchupLuck = { ...team, luckFactor };
     }
-    if (!worstDrafter[0] || worstDrafter[1] < draft) {
-      worstDrafter = [team[rosterid], draft];
+    if (!worstDrafter || worstDrafter.points.draft > draft) {
+      bestMatchupLuck = { ...team, luckFactor };
     }
-    if (!bestDrafter[0] || bestDrafter[1] > draft) {
-      bestDrafter = [team[rosterid], draft];
+    if (!bestDrafter || bestDrafter.points.draft < draft) {
+      bestDrafter = { ...team, luckFactor };
     }
-    if (!worstTrader[0] || worstTrader[1] < trades) {
-      worstTrader = [team[rosterid], trade];
+    if (trades > 0 && (!worstTrader || worstTrader.points.trades > trades)) {
+      worstTrader = { ...team, luckFactor };
     }
-    if (!bestTrader[0] || bestTrader[1] > trades) {
-      bestTrader = [team[rosterid], trades];
+    if (!bestTrader || bestTrader.points.trades < trades) {
+      bestTrader = { ...team, luckFactor };
     }
-    if (!bestWaiverWire[0] || bestWaiverWire[1] > adds) {
-      bestWaiverWire = [team[rosterid], adds];
+    if (!bestWaiverWire || bestWaiverWire.points.adds < adds) {
+      bestWaiverWire = { ...team, luckFactor };
     }
   });
 
@@ -212,3 +210,4 @@ export const analyzeLeague = async (leagueId) => {
                     OTHER //GET https://api.sleeper.app/v1/league/<league_id>/users -- . user.avatar
   // https://sleepercdn.com/avatars/thumbs/${user.avatar}
 */
+

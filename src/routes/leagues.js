@@ -6,6 +6,7 @@ router.get("/:leagueId", async (req, res) => {
   try {
     const { leagueId } = req.params;
     const leagueAnalysis = await analyzeLeague(leagueId);
+    console.log(leagueAnalysis);
 
     return res.status(200).json({ leagueAnalysis });
   } catch (error) {
